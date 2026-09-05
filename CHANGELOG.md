@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 — 2026-09-04
+
+- Verify explicit MCP transports from each candidate repository's public README and root package metadata.
+
 ## 0.1.2 — 2026-09-04
 
 - Detect concrete repository workflows and include workflow fit in candidate ranking.

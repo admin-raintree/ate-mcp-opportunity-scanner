@@ -20,7 +20,7 @@ from typing import Iterable, Iterator, Mapping
 
 DATASET = "CohereLabs/ATE"
 DATASET_API = "https://datasets-server.huggingface.co"
-USER_AGENT = "ate-mcp-opportunity-scanner/0.1.2 (+https://github.com/admin-raintree/ate-mcp-opportunity-scanner)"
+USER_AGENT = "ate-mcp-opportunity-scanner/0.1.3 (+https://github.com/admin-raintree/ate-mcp-opportunity-scanner)"
 MAX_FILE_BYTES = 256_000
 MAX_FILES = 1_000
 MAX_CATALOG_ROWS = 100_000
@@ -127,6 +127,17 @@ CLIENT_TRANSPORTS = {
     "Cursor": {"stdio", "http", "sse"},
     "Grok Build": {"stdio", "http"},
 }
+TRANSPORT_PATTERNS = {
+    "stdio": re.compile(
+        r"\bstdio\b|StdioServerTransport|--transport[ =]+stdio|"
+        r"(?:claude|codex|grok)\s+mcp\s+add\s+[^\r\n]*\s--\s|"
+        r'''["']mcpServers["']\s*:\s*\{[\s\S]{0,2000}["']command["']\s*:''',
+        re.IGNORECASE,
+    ),
+    "http": re.compile(r"streamable[ -]?http|StreamableHTTPServerTransport|--transport[ =]+http", re.IGNORECASE),
+    "sse": re.compile(r"server[- ]sent events|SSEServerTransport|--transport[ =]+sse", re.IGNORECASE),
+    "websocket": re.compile(r"\bwebsocket\b|\bweb socket\b|--transport[ =]+websocket", re.IGNORECASE),
+}
 PERMISSION_SIGNALS = {
     "credentials": {"credential", "credentials", "secret", "token", "oauth", "authentication"},
     "filesystem": {"file", "files", "filesystem", "directory", "folder"},
@@ -178,6 +189,8 @@ class Candidate:
     repository: dict[str, object] | None = None
     workflow_fit: list[str] = field(default_factory=list)
     compatibility: dict[str, str] = field(default_factory=dict)
+    transport_evidence: dict[str, list[str]] = field(default_factory=dict)
+    repository_transport_checked: bool = False
     maintenance: str = "unknown"
     permission_signals: list[str] = field(default_factory=list)
     security_review: str = "required"
@@ -623,33 +636,33 @@ def rank_candidates(context: ProjectContext, rows: Iterable[dict[str, str]], lim
 def detect_transports(candidate: Candidate) -> list[str]:
     """Return transports named by ATE metadata; absence means compatibility is unknown."""
     text = " ".join(str(value) for value in candidate.row.values()).lower()
-    transports: set[str] = set()
-    if re.search(r"\b(stdio|standard input|local server)\b", text):
-        transports.add("stdio")
-    if re.search(r"\b(streamable[ -]?http|remote http|http server)\b", text):
-        transports.add("http")
-    if re.search(r"\b(server[- ]sent events|sse)\b", text):
-        transports.add("sse")
-    if re.search(r"\b(websocket|web socket|wss)\b", text):
-        transports.add("websocket")
-    return sorted(transports)
+    return sorted(name for name, pattern in TRANSPORT_PATTERNS.items() if pattern.search(text))
 
 
 def assess_candidate(candidate: Candidate) -> None:
     """Attach bounded compatibility, maintenance, permission, and review evidence."""
-    transports = detect_transports(candidate)
+    metadata_transports = detect_transports(candidate)
+    transports = sorted(set(metadata_transports).union(candidate.transport_evidence))
     for client, supported in CLIENT_TRANSPORTS.items():
         matches = sorted(set(transports).intersection(supported))
         if matches:
+            evidence = []
+            for transport in matches:
+                sources = (["ATE metadata"] if transport in metadata_transports else []) + candidate.transport_evidence.get(transport, [])
+                evidence.append(f"{transport} in {', '.join(dict.fromkeys(sources))}")
             candidate.compatibility[client] = (
-                f"possible via {', '.join(matches)}; configuration and authentication not tested"
+                f"possible via {'; '.join(evidence)}; configuration and authentication not tested"
             )
         elif transports:
             candidate.compatibility[client] = (
-                f"not established; metadata mentions {', '.join(transports)}"
+                f"not established; available evidence identifies {', '.join(transports)}"
             )
         else:
-            candidate.compatibility[client] = "unknown; ATE metadata does not identify a transport"
+            candidate.compatibility[client] = (
+                "unknown; no explicit transport found in ATE or attempted repository metadata"
+                if candidate.repository_transport_checked
+                else "unknown; ATE metadata does not identify a transport"
+            )
 
     repository = candidate.repository or {}
     warnings = [str(item) for item in repository.get("warnings", [])]
@@ -699,6 +712,39 @@ def resolve_server(mcp_id: str) -> dict[str, object] | None:
     return rows[0].get("row", rows[0])
 
 
+def _read_public_github_file(repository_url: str, branch: str, filename: str) -> str | None:
+    match = URL_RE.match(repository_url)
+    if not match or not re.fullmatch(r"[A-Za-z0-9._/-]{1,200}", branch):
+        return None
+    owner, repository = match.groups()
+    parts = [urllib.parse.quote(value, safe="") for value in (owner, repository, branch, filename)]
+    url = f"https://raw.githubusercontent.com/{'/'.join(parts)}"
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/plain"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if urllib.parse.urlparse(response.geturl()).hostname != "raw.githubusercontent.com":
+                return None
+            content = response.read(MAX_FILE_BYTES + 1)
+    except (urllib.error.URLError, TimeoutError):
+        return None
+    if len(content) > MAX_FILE_BYTES:
+        return None
+    return content.decode("utf-8", errors="ignore")
+
+
+def repository_transport_evidence(repository_url: str, branch: str) -> dict[str, list[str]]:
+    """Read bounded public documentation and package metadata without cloning code."""
+    evidence: dict[str, list[str]] = {}
+    for filename in ("README.md", "package.json", "pyproject.toml", "server.json", ".mcp.json"):
+        text = _read_public_github_file(repository_url, branch, filename)
+        if not text:
+            continue
+        for transport, pattern in TRANSPORT_PATTERNS.items():
+            if pattern.search(text):
+                evidence.setdefault(transport, []).append(filename)
+    return evidence
+
+
 def github_health(repository_url: str) -> dict[str, object]:
     match = URL_RE.match(repository_url)
     if not match:
@@ -733,11 +779,17 @@ def github_health(repository_url: str) -> dict[str, object]:
         "stars": data.get("stargazers_count"),
         "license": (data.get("license") or {}).get("spdx_id") if isinstance(data.get("license"), dict) else None,
         "pushed_at": pushed,
+        "default_branch": data.get("default_branch"),
         "warnings": warnings,
     }
 
 
-def enrich_candidates(candidates: list[Candidate], offline: bool = False) -> None:
+def enrich_candidates(
+    candidates: list[Candidate],
+    offline: bool = False,
+    repository_cache: dict[str, tuple[dict[str, object], dict[str, list[str]]]] | None = None,
+) -> None:
+    repository_cache = repository_cache if repository_cache is not None else {}
     for candidate in candidates:
         repository_url = candidate.row.get("github_url")
         repository_match = URL_RE.match(str(repository_url or ""))
@@ -769,8 +821,17 @@ def enrich_candidates(candidates: list[Candidate], offline: bool = False) -> Non
         if resolved_match:
             owner, repository_name = resolved_match.groups()
             repository_url = f"https://github.com/{owner}/{repository_name}"
-            health = github_health(repository_url)
+            if repository_url not in repository_cache:
+                health = github_health(repository_url)
+                branch = str(health.get("default_branch") or "main")
+                repository_cache[repository_url] = (
+                    health,
+                    repository_transport_evidence(repository_url, branch),
+                )
+            health, transport_evidence = repository_cache[repository_url]
             candidate.repository = {"url": repository_url, **health}
+            candidate.transport_evidence = transport_evidence
+            candidate.repository_transport_checked = True
         assess_candidate(candidate)
 
 
@@ -842,7 +903,7 @@ def render_report(context: ProjectContext, candidates: list[Candidate]) -> str:
         lines.extend([f"   - Match score: {candidate.score:.1f}", ""])
     lines.extend([
         "## Interpretation", "",
-        "These results are discovery leads, not compatibility or security approvals. Compatibility states describe only transports named in published ATE metadata; the scanner did not install, authenticate to, or run a server. Cohere classified tool descriptions with a language model; it did not execute the tools. Action-risk and permission labels come from keyword classifiers. Match scores are internal ranking values with no fixed maximum; they are not probabilities. Compare scores only within this report. Review source code, permissions, maintenance, data handling, and destructive actions before installation.", "",
+        "These results are discovery leads, not compatibility or security approvals. Compatibility states describe only explicit transports found in published ATE metadata or bounded public repository documentation and package metadata; the scanner did not install, authenticate to, or run a server. Cohere classified tool descriptions with a language model; it did not execute the tools. Action-risk and permission labels come from keyword classifiers. Match scores are internal ranking values with no fixed maximum; they are not probabilities. Compare scores only within this report. Review source code, permissions, maintenance, data handling, and destructive actions before installation.", "",
     ])
     return "\n".join(lines)
 

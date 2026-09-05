@@ -17,7 +17,7 @@ Use it to:
 - Rank candidates against concrete repository workflows such as tests, documentation, continuous integration, packaging, migrations, and deployment.
 - Optionally detect Codex, Claude Code, Cursor, or Grok-compatible configuration folders.
 - Optionally avoid recommending exact server names already present in recognized MCP configurations.
-- Report transport-based compatibility evidence for Codex, Claude Code, Cursor, and Grok Build without claiming that an untested server works.
+- Report transport-based compatibility evidence from ATE and public candidate repository metadata for Codex, Claude Code, Cursor, and Grok Build without claiming that an untested server works.
 - Screen recommendations for permission signals, destructive actions, missing licenses, archived repositories, and stale maintenance.
 - Generate an inert configuration review bundle that keeps every candidate disabled or outside a live client configuration.
 
@@ -33,7 +33,7 @@ It reads:
 - Keys—but not values—from MCP and agent JSON configuration files.
 - MCP server table names—but not commands, arguments, URLs, environment values, or headers—from recognized JSON and TOML configurations.
 
-It skips `.env` files, credential files, private keys, symlinks, large files, source-file contents, conversation histories, and common generated folders. It sends public dataset queries to Hugging Face and public candidate repository identifiers to GitHub. It does not send project names, paths, metadata, matching signals, or reports to either service. See the [security and privacy model](SECURITY.md) for the full boundary.
+It skips `.env` files, credential files, private keys, symlinks, large files, source-file contents, conversation histories, and common generated folders. It sends public dataset queries to Hugging Face and public candidate repository identifiers to GitHub. For resolved candidates, it reads bounded public copies of `README.md`, `package.json`, `pyproject.toml`, `server.json`, and `.mcp.json` from the repository's reported default branch, falling back to `main`, to find explicit MCP transport declarations or local MCP command configurations. It does not send project names, paths, metadata, matching signals, or reports to either service. See the [security and privacy model](SECURITY.md) for the full boundary.
 
 The scanner prints its report to the terminal by default. When you pass `--output`, it writes the report to that file instead. The report can contain the selected project's folder name, detected capability classes, the number of configured MCP server names, and recommendations. Terminal output can remain in shell history or captured logs. An output file remains at the selected location until you delete it.
 
@@ -143,7 +143,7 @@ After reviewing a candidate, follow the [agent-specific MCP setup guide](docs/ag
 - Some ATE classifications are implausible or overly broad.
 - The local ranker combines term weighting with a small capability map. It does not understand a repository as deeply as a code reviewer.
 - Repository screening cannot detect malicious code or prove compatibility.
-- ATE metadata often omits the MCP transport. The scanner reports compatibility as unknown in that case.
+- ATE metadata often omits the MCP transport. The scanner then checks bounded public repository documentation and package metadata. It reports compatibility as unknown when those files also lack explicit evidence.
 - Client approval prompts and disabled templates do not prove that a server is read-only. A reviewer must verify and test a server-specific read-only mode before activation.
 - The agent configuration check reports configuration-folder presence. It does not prove that an agent supports a recommended MCP server.
 - Hugging Face may rate-limit or temporarily delay the first catalog build.

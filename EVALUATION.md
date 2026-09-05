@@ -4,7 +4,7 @@ The current evidence supports an experimental discovery release. It does not est
 
 ## Available evidence
 
-The automated test suite covers metadata minimization, agent-configuration opt-in, untrusted links and Markdown, catalog limits, workflow detection, risk and permission labels, bounded transport compatibility, inert review templates, and one positive ranking example. GitHub Actions runs the tests and package-installation check on Python 3.11 through 3.14.
+The automated test suite covers metadata minimization, agent-configuration opt-in, untrusted links and Markdown, catalog limits, workflow detection, risk and permission labels, bounded repository transport evidence, inert review templates, and one positive ranking example. GitHub Actions runs the tests and package-installation check on Python 3.11 through 3.14.
 
 During development, one reviewer inspected recommendations for 17 local repositories. Those repositories influenced the ranker, and the review did not preserve enough privacy-safe item-level evidence for independent reproduction. This document therefore makes no numerical quality claim from that review.
 
@@ -26,4 +26,4 @@ Workflow fit now uses concrete repository surfaces such as test and documentatio
 
 ## Release criterion
 
-Version `0.1.2` remains an experimental discovery release. A future relevance claim requires a versioned scanner commit, a documented repository-selection method, a held-out repository set, privacy-safe item-level labels, more than one independent reviewer, disagreement measurement, and a reproducible scoring procedure. A future compatibility claim also requires successful server-level integration tests. A future safety claim requires source review and behavior testing for each recommended MCP server.
+Version `0.1.3` remains an experimental discovery release. A future relevance claim requires a versioned scanner commit, a documented repository-selection method, a held-out repository set, privacy-safe item-level labels, more than one independent reviewer, disagreement measurement, and a reproducible scoring procedure. A future compatibility claim also requires successful server-level integration tests. A future safety claim requires source review and behavior testing for each recommended MCP server.

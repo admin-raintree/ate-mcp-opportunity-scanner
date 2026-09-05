@@ -78,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
 
     reports: list[str] = []
     review_bundles: list[str] = []
+    repository_cache: dict = {}
     for supplied in arguments.paths:
         try:
             context = collect_context(
@@ -98,7 +99,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"[ATE104] The catalog at {catalog} could not be read: {type(error).__name__}. "
                 "Pass --catalog with a valid ATE JSONL file"
             )
-        enrich_candidates(candidates, offline=arguments.offline)
+        enrich_candidates(
+            candidates,
+            offline=arguments.offline,
+            repository_cache=repository_cache,
+        )
         reports.append(render_report(context, candidates))
         review_bundles.append(render_review_config(context, candidates))
     if not reports:

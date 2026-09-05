@@ -164,6 +164,21 @@ class RankingTests(unittest.TestCase):
         )
         core.assess_candidate(candidate)
         self.assertTrue(all(value.startswith("unknown") for value in candidate.compatibility.values()))
+        candidate.repository_transport_checked = True
+        core.assess_candidate(candidate)
+        self.assertIn("attempted repository metadata", candidate.compatibility["Codex"])
+
+    def test_repository_evidence_can_establish_transport_compatibility(self):
+        candidate = core.Candidate(
+            score=1,
+            row={"tool_name": "search_docs", "tool_description": "Search documentation"},
+            signals=[],
+            risk_level="low",
+            risk_signals=[],
+            transport_evidence={"stdio": ["README.md", "server.json"]},
+        )
+        core.assess_candidate(candidate)
+        self.assertIn("possible via stdio in README.md, server.json", candidate.compatibility["Codex"])
 
     def test_review_bundle_is_inert_and_approval_gated(self):
         candidate = core.Candidate(
@@ -275,6 +290,62 @@ class CatalogTests(unittest.TestCase):
         )
         core.enrich_candidates([candidate], offline=True)
         self.assertIsNone(candidate.repository)
+
+
+class RepositoryCompatibilityTests(unittest.TestCase):
+    def test_reads_explicit_transport_evidence_from_public_metadata(self):
+        files = {
+            "README.md": 'Configure with {"mcpServers":{"example":{"command":"npx"}}}. Supports Streamable HTTP.',
+            "package.json": '{"description":"ordinary package"}',
+            "server.json": '{"transport":"SSEServerTransport"}',
+        }
+        with mock.patch.object(
+            core,
+            "_read_public_github_file",
+            side_effect=lambda _repository, _branch, filename: files.get(filename),
+        ):
+            evidence = core.repository_transport_evidence(
+                "https://github.com/example/server",
+                "main",
+            )
+        self.assertEqual(evidence["stdio"], ["README.md"])
+        self.assertEqual(evidence["http"], ["README.md"])
+        self.assertEqual(evidence["sse"], ["server.json"])
+
+    def test_rejects_unrecognized_repository_urls_before_network_access(self):
+        with mock.patch.object(core.urllib.request, "urlopen") as urlopen:
+            result = core._read_public_github_file(
+                "https://attacker.invalid/example/server",
+                "main",
+                "README.md",
+            )
+        self.assertIsNone(result)
+        urlopen.assert_not_called()
+
+    def test_reuses_repository_evidence_across_candidate_batches(self):
+        def candidate():
+            return core.Candidate(
+                score=1,
+                row={"github_url": "https://github.com/example/server"},
+                signals=[],
+                risk_level="low",
+                risk_signals=[],
+            )
+
+        cache = {}
+        with mock.patch.object(
+            core,
+            "github_health",
+            return_value={"status": "screened", "default_branch": "main", "warnings": []},
+        ) as health, mock.patch.object(
+            core,
+            "repository_transport_evidence",
+            return_value={"stdio": ["README.md"]},
+        ) as evidence:
+            core.enrich_candidates([candidate()], repository_cache=cache)
+            core.enrich_candidates([candidate()], repository_cache=cache)
+        health.assert_called_once()
+        evidence.assert_called_once()
 
 
 class WorkflowDetectionTests(unittest.TestCase):
