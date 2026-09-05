@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — 2026-09-04
+
+- Detect concrete repository workflows and include workflow fit in candidate ranking.
+- Report bounded client-transport compatibility, maintenance state, permission signals, and security-review priority.
+- Add `--review-config` for inert Codex, Claude Code, Cursor, and Grok Build configuration templates.
+- Keep one JSONL catalog path and one reusable client-template set per repository.
+
 ## 0.1.1 — 2026-09-04
 
 - Define MCP tools and MCP servers consistently.

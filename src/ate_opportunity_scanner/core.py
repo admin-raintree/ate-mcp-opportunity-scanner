@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import csv
 import json
 import math
 import os
 import re
-import shutil
-import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -23,10 +20,9 @@ from typing import Iterable, Iterator, Mapping
 
 DATASET = "CohereLabs/ATE"
 DATASET_API = "https://datasets-server.huggingface.co"
-USER_AGENT = "ate-mcp-opportunity-scanner/0.1 (+https://github.com/admin-raintree/ate-mcp-opportunity-scanner)"
+USER_AGENT = "ate-mcp-opportunity-scanner/0.1.2 (+https://github.com/admin-raintree/ate-mcp-opportunity-scanner)"
 MAX_FILE_BYTES = 256_000
 MAX_FILES = 1_000
-MAX_DOWNLOAD_BYTES = 256_000_000
 MAX_CATALOG_ROWS = 100_000
 TOKEN_RE = re.compile(r"[a-z][a-z0-9+#.-]{2,}")
 URL_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
@@ -210,10 +206,10 @@ def expand_capabilities(terms: Counter[str]) -> None:
     terms.update(additions)
 
 
-def detect_workflows(root: Path, terms: Counter[str]) -> dict[str, list[str]]:
+def detect_workflows(root: Path, manifest_sources: Mapping[str, str]) -> dict[str, list[str]]:
     """Identify concrete workflow surfaces without retaining commands or file contents."""
     evidence: dict[str, list[str]] = {}
-    sources: dict[str, str] = {}
+    sources = dict(manifest_sources)
     if (root / "tests").is_dir() or (root / "test").is_dir():
         sources["tests"] = "test directory"
     if (root / ".github" / "workflows").is_dir():
@@ -225,33 +221,7 @@ def detect_workflows(root: Path, terms: Counter[str]) -> dict[str, list[str]]:
     if any((root / name).is_dir() for name in ("migrations", "alembic")):
         sources["migration"] = "migration directory"
 
-    package = root / "package.json"
-    try:
-        package_data = json.loads(package.read_text(encoding="utf-8")) if package.is_file() else {}
-    except (OSError, json.JSONDecodeError):
-        package_data = {}
-    scripts = package_data.get("scripts", {}) if isinstance(package_data, dict) else {}
-    if isinstance(scripts, dict):
-        for name in scripts:
-            for token in tokenize(str(name)):
-                sources.setdefault(token, "package.json script name")
-
-    project_file = root / "pyproject.toml"
-    try:
-        import tomllib
-        project_data = tomllib.loads(project_file.read_text(encoding="utf-8")) if project_file.is_file() else {}
-    except (OSError, ValueError, TypeError):
-        project_data = {}
-    if isinstance(project_data, dict):
-        tool_names = project_data.get("tool", {})
-        if isinstance(tool_names, dict):
-            for name in tool_names:
-                sources.setdefault(str(name).lower(), "pyproject.toml tool configuration")
-        project_scripts = project_data.get("project", {}).get("scripts", {}) if isinstance(project_data.get("project"), dict) else {}
-        if isinstance(project_scripts, dict) and project_scripts:
-            sources.setdefault("package", "Python command entry point")
-
-    observed_terms = set(terms).union(sources)
+    observed_terms = set(sources)
     for workflow, triggers in WORKFLOW_PROFILES.items():
         hits = sorted(observed_terms.intersection(triggers))
         if hits:
@@ -304,7 +274,7 @@ def _approved_json_metadata(path: Path, value: object) -> list[str]:
     return strings
 
 
-def metadata_terms(path: Path) -> Counter[str]:
+def metadata_terms(path: Path, workflow_sources: dict[str, str] | None = None) -> Counter[str]:
     try:
         if path.is_symlink() or path.name.lower() in SENSITIVE_NAMES:
             return Counter()
@@ -320,6 +290,12 @@ def metadata_terms(path: Path) -> Counter[str]:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             return Counter()
+        if lower_name == "package.json" and isinstance(parsed, dict) and workflow_sources is not None:
+            scripts = parsed.get("scripts", {})
+            if isinstance(scripts, dict):
+                for name in scripts:
+                    for token in tokenize(str(name)):
+                        workflow_sources.setdefault(token, "package.json script name")
         return tokenize(" ".join(_approved_json_metadata(path, parsed)))
     if lower_name in {"agents.md", "claude.md", "cursor.md", ".cursorrules", "readme.md", "readme.txt"}:
         headings = [line.lstrip("# ") for line in raw.splitlines() if line.startswith("#")]
@@ -333,6 +309,13 @@ def metadata_terms(path: Path) -> Counter[str]:
             parsed = tomllib.loads(raw)
         except (ValueError, TypeError):
             return Counter()
+        if lower_name == "pyproject.toml" and workflow_sources is not None:
+            tools = parsed.get("tool", {}) if isinstance(parsed, dict) else {}
+            for name in tools if isinstance(tools, dict) else ():
+                workflow_sources.setdefault(str(name).lower(), "pyproject.toml tool configuration")
+            project = parsed.get("project", {}) if isinstance(parsed, dict) else {}
+            if isinstance(project, dict) and isinstance(project.get("scripts"), dict) and project["scripts"]:
+                workflow_sources.setdefault("package", "Python command entry point")
         return tokenize(" ".join(_approved_json_metadata(path, parsed)))
     return tokenize(" ".join(re.findall(r"^[A-Za-z][A-Za-z0-9_.-]*:", raw, re.MULTILINE)))
 
@@ -401,6 +384,7 @@ def collect_context(
         installed_servers=detected_server_names() if include_agent_configs else set(),
         agent_configs_checked=include_agent_configs,
     )
+    workflow_sources: dict[str, str] = {}
     context.terms.update(tokenize(root.name))
     for current, directory_names, file_names in os.walk(root, followlinks=False):
         directory_names[:] = sorted(
@@ -424,7 +408,7 @@ def collect_context(
                 context.terms[capability] += 1
             if filename.lower() in MANIFEST_NAMES:
                 context.installed_servers.update(configured_server_names(path))
-                terms = metadata_terms(path)
+                terms = metadata_terms(path, workflow_sources)
                 if terms:
                     context.terms.update(terms)
                     context.metadata_files.append(str(path.relative_to(root)))
@@ -433,6 +417,7 @@ def collect_context(
         name for name, (triggers, _) in OPPORTUNITY_PROFILES.items()
         if set(context.terms).intersection(triggers)
     ]
+    context.workflows = detect_workflows(root, workflow_sources)
     return context
 
 
@@ -461,112 +446,6 @@ def _request_json(endpoint: str, parameters: Mapping[str, str | int], retries: i
         time.sleep(delay)
         delay = min(delay * 2, 20)
     raise RuntimeError(f"dataset request failed: {last_error}")
-
-
-def _download_file(url: str, destination: Path, expected_size: int) -> None:
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != "huggingface.co":
-        raise RuntimeError("refusing a dataset download outside https://huggingface.co")
-    if expected_size < 1 or expected_size > MAX_DOWNLOAD_BYTES:
-        raise RuntimeError(f"refusing unexpected dataset size: {expected_size} bytes")
-
-    def allowed_redirect(target: str) -> bool:
-        target_url = urllib.parse.urlparse(target)
-        hostname = target_url.hostname or ""
-        return target_url.scheme == "https" and (
-            hostname == "huggingface.co"
-            or hostname.endswith(".huggingface.co")
-            or hostname.endswith(".hf.co")
-        )
-
-    class RestrictedRedirectHandler(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, request, fp, code, message, headers, newurl):
-            if not allowed_redirect(newurl):
-                raise urllib.error.HTTPError(newurl, code, "refused download redirect", headers, fp)
-            return super().redirect_request(request, fp, code, message, headers, newurl)
-
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    opener = urllib.request.build_opener(RestrictedRedirectHandler())
-    with opener.open(request, timeout=120) as response, destination.open("wb") as handle:
-        if not allowed_redirect(response.geturl()):
-            raise RuntimeError("refusing an unexpected final dataset URL")
-        remaining = expected_size + 1
-        while remaining:
-            chunk = response.read(min(1024 * 1024, remaining))
-            if not chunk:
-                break
-            handle.write(chunk)
-            remaining -= len(chunk)
-    actual_size = destination.stat().st_size
-    if actual_size != expected_size:
-        raise RuntimeError(f"dataset download size mismatch: received {actual_size}, expected {expected_size}")
-
-
-def _sql_path(path: Path) -> str:
-    return str(path.resolve()).replace("'", "''")
-
-
-def _parquet_sources() -> dict[str, tuple[str, int]]:
-    result = _request_json("parquet", {"dataset": DATASET}, retries=4)
-    sources: dict[str, tuple[str, int]] = {}
-    for item in result.get("parquet_files", []):
-        if item.get("split") == "train" and item.get("config") in {"onet_matches", "servers"}:
-            sources[str(item["config"])] = (str(item["url"]), int(item["size"]))
-    if set(sources) != {"onet_matches", "servers"}:
-        raise RuntimeError("official ATE Parquet files were not available")
-    return sources
-
-
-def _download_catalog_with_duckdb(destination: Path, duckdb: str) -> Path:
-    sources = _parquet_sources()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    matches_path = destination.with_name("onet_matches.download.parquet")
-    servers_path = destination.with_name("servers.download.parquet")
-    temporary = destination.with_suffix(".tmp")
-    try:
-        matches_url, matches_size = sources["onet_matches"]
-        servers_url, servers_size = sources["servers"]
-        _download_file(matches_url, matches_path, matches_size)
-        _download_file(servers_url, servers_path, servers_size)
-        sql = f"""
-        COPY (
-            SELECT
-                matches.mcp_id,
-                matches.tool_id,
-                matches.server_name,
-                matches.tool_name,
-                matches.tool_description,
-                matches.task_id,
-                matches.task_text,
-                matches.occupation_title,
-                matches.soc_code,
-                matches.cosine_similarity,
-                matches.match_quality,
-                matches.match_notes,
-                servers.github_url,
-                servers.github_stargazers_count,
-                servers.github_archived,
-                servers.github_pushed_at
-            FROM read_parquet('{_sql_path(matches_path)}') AS matches
-            LEFT JOIN read_parquet('{_sql_path(servers_path)}') AS servers USING (mcp_id)
-            WHERE matches.match_quality = 'good'
-        ) TO '{_sql_path(temporary)}' (FORMAT JSON, ARRAY false);
-        """
-        completed = subprocess.run(
-            [duckdb, "-c", sql], check=False, capture_output=True, text=True, timeout=120
-        )
-        if completed.returncode != 0:
-            raise RuntimeError(f"DuckDB catalog extraction failed: {completed.stderr.strip()}")
-        if temporary.stat().st_size > MAX_DOWNLOAD_BYTES:
-            raise RuntimeError("extracted catalog exceeded the local size limit")
-        temporary.replace(destination)
-        return destination
-    except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError(f"fast catalog build failed: {error}") from error
-    finally:
-        matches_path.unlink(missing_ok=True)
-        servers_path.unlink(missing_ok=True)
-        temporary.unlink(missing_ok=True)
 
 
 def _download_catalog_via_api(destination: Path) -> Path:
@@ -623,24 +502,10 @@ def _download_catalog_via_api(destination: Path) -> Path:
 def download_catalog(destination: Path, refresh: bool = False) -> Path:
     if destination.is_file() and not refresh:
         return destination
-    duckdb = shutil.which("duckdb")
-    if duckdb:
-        resolved_duckdb = Path(duckdb).resolve()
-        working_directory = Path.cwd().resolve()
-        if resolved_duckdb == working_directory or working_directory in resolved_duckdb.parents:
-            duckdb = None
-        else:
-            duckdb = str(resolved_duckdb)
-    if duckdb:
-        return _download_catalog_with_duckdb(destination, duckdb)
     return _download_catalog_via_api(destination)
 
 
 def iter_catalog(path: Path) -> Iterator[dict[str, str]]:
-    if path.suffix.lower() == ".csv":
-        with path.open(newline="", encoding="utf-8") as handle:
-            yield from csv.DictReader(handle)
-        return
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             if line.strip():
@@ -714,6 +579,12 @@ def rank_candidates(context: ProjectContext, rows: Iterable[dict[str, str]], lim
             pass
         description = f"{row.get('tool_name', '')} {row.get('tool_description', '')}"
         risk_level, risk_signals = classify_risk(description)
+        candidate_term_set = set(candidate_terms)
+        workflow_fit = [
+            workflow for workflow, triggers in WORKFLOW_PROFILES.items()
+            if workflow in context.workflows and candidate_term_set.intersection(triggers)
+        ]
+        score += 6.0 * len(workflow_fit)
         if risk_level == "high":
             score *= 0.75
         elif risk_level == "medium":
@@ -730,6 +601,7 @@ def rank_candidates(context: ProjectContext, rows: Iterable[dict[str, str]], lim
             )[:8],
             risk_level=risk_level,
             risk_signals=risk_signals,
+            workflow_fit=workflow_fit,
         ))
 
     ranked.sort(key=lambda candidate: candidate.score, reverse=True)
@@ -746,6 +618,68 @@ def rank_candidates(context: ProjectContext, rows: Iterable[dict[str, str]], lim
         if len(results) >= limit:
             break
     return results
+
+
+def detect_transports(candidate: Candidate) -> list[str]:
+    """Return transports named by ATE metadata; absence means compatibility is unknown."""
+    text = " ".join(str(value) for value in candidate.row.values()).lower()
+    transports: set[str] = set()
+    if re.search(r"\b(stdio|standard input|local server)\b", text):
+        transports.add("stdio")
+    if re.search(r"\b(streamable[ -]?http|remote http|http server)\b", text):
+        transports.add("http")
+    if re.search(r"\b(server[- ]sent events|sse)\b", text):
+        transports.add("sse")
+    if re.search(r"\b(websocket|web socket|wss)\b", text):
+        transports.add("websocket")
+    return sorted(transports)
+
+
+def assess_candidate(candidate: Candidate) -> None:
+    """Attach bounded compatibility, maintenance, permission, and review evidence."""
+    transports = detect_transports(candidate)
+    for client, supported in CLIENT_TRANSPORTS.items():
+        matches = sorted(set(transports).intersection(supported))
+        if matches:
+            candidate.compatibility[client] = (
+                f"possible via {', '.join(matches)}; configuration and authentication not tested"
+            )
+        elif transports:
+            candidate.compatibility[client] = (
+                f"not established; metadata mentions {', '.join(transports)}"
+            )
+        else:
+            candidate.compatibility[client] = "unknown; ATE metadata does not identify a transport"
+
+    repository = candidate.repository or {}
+    warnings = [str(item) for item in repository.get("warnings", [])]
+    pushed = repository.get("pushed_at") or candidate.row.get("github_pushed_at")
+    archived = any("archived" in warning.lower() for warning in warnings) or str(
+        candidate.row.get("github_archived", "")
+    ).lower() == "true"
+    if archived:
+        candidate.maintenance = "archived"
+    elif isinstance(pushed, str) and pushed:
+        try:
+            age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(pushed.replace("Z", "+00:00"))).days
+            candidate.maintenance = "stale" if age_days > 730 else "recently updated" if age_days <= 365 else "aging"
+        except ValueError:
+            candidate.maintenance = "unknown"
+    else:
+        candidate.maintenance = "unknown"
+
+    text_terms = set(tokenize(" ".join(str(candidate.row.get(key, "")) for key in (
+        "tool_name", "server_name", "tool_description", "task_text"
+    ))))
+    candidate.permission_signals = sorted(
+        category for category, terms in PERMISSION_SIGNALS.items() if text_terms.intersection(terms)
+    )
+    if candidate.risk_level == "high" or candidate.maintenance in {"archived", "stale"}:
+        candidate.security_review = "high priority"
+    elif candidate.risk_level == "medium" or warnings or candidate.permission_signals:
+        candidate.security_review = "required before use"
+    else:
+        candidate.security_review = "required; no elevated signal detected"
 
 
 def resolve_server(mcp_id: str) -> dict[str, object] | None:
@@ -821,6 +755,7 @@ def enrich_candidates(candidates: list[Candidate], offline: bool = False) -> Non
         else:
             repository_url = None
         if offline:
+            assess_candidate(candidate)
             continue
         server: dict[str, object] | None = None
         if not repository_url:
@@ -836,15 +771,20 @@ def enrich_candidates(candidates: list[Candidate], offline: bool = False) -> Non
             repository_url = f"https://github.com/{owner}/{repository_name}"
             health = github_health(repository_url)
             candidate.repository = {"url": repository_url, **health}
+        assess_candidate(candidate)
+
+
+def _markdown_text(value: object, limit: int | None = None) -> str:
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", str(value)).strip()
+    if limit is not None:
+        text = text[:limit]
+    text = text.replace("\\", "\\\\")
+    for character in ("`", "*", "_", "[", "]", "<", ">", "|"):
+        text = text.replace(character, f"\\{character}")
+    return text
 
 
 def render_report(context: ProjectContext, candidates: list[Candidate]) -> str:
-    def safe(value: object) -> str:
-        text = re.sub(r"[\x00-\x1f\x7f]", " ", str(value))
-        text = text.replace("\\", "\\\\")
-        for character in ("`", "*", "_", "[", "]", "<", ">"):
-            text = text.replace(character, f"\\{character}")
-        return text
 
     def shortened(value: object, limit: int = 500) -> str:
         text = re.sub(r"\s+", " ", str(value)).strip()
@@ -859,37 +799,157 @@ def render_report(context: ProjectContext, candidates: list[Candidate]) -> str:
         agent_status = "not requested; pass --include-agent-configs to check"
 
     lines = [
-        f"# MCP opportunities for {safe(context.root.name)}", "",
+        f"# MCP opportunities for {_markdown_text(context.root.name)}", "",
         "An MCP tool is a callable function. An MCP server provides one or more MCP tools.", "",
         f"Scanned locally at {datetime.now(timezone.utc).isoformat()}. No project content was uploaded. This report remains at the location you selected until you delete it.", "",
         f"Agent configuration check: {agent_status}", "",
         f"Opportunity classes: {', '.join(context.opportunities) if context.opportunities else 'no strong signal'}", "",
+        "Observed repository workflows:",
+        *(
+            [f"- {_markdown_text(name)} ({_markdown_text(', '.join(sources))})" for name, sources in context.workflows.items()]
+            or ["- No concrete workflow signal detected"]
+        ),
+        "",
         f"Configured MCP server names found in the scanned scope: {len(context.installed_servers)}", "",
         f"Considered {context.files_seen} filenames and read {len(context.metadata_files)} approved metadata files.", "",
         "## Candidates", "",
     ]
     for index, candidate in enumerate(candidates, 1):
         row = candidate.row
-        name = safe(row.get("tool_name") or "Unnamed tool")
-        server = safe(row.get("server_name") or "Unknown server")
-        description = safe(shortened(row.get("tool_description") or row.get("task_text") or "No description"))
+        name = _markdown_text(row.get("tool_name") or "Unnamed tool")
+        server = _markdown_text(row.get("server_name") or "Unknown server")
+        description = _markdown_text(shortened(row.get("tool_description") or row.get("task_text") or "No description"))
         lines.extend([
             f"{index}. **{name}** from **{server}**", "",
             f"   - Published description: {description}",
-            f"   - Matching signals: {safe(', '.join(candidate.signals))}",
+            f"   - Matching signals: {_markdown_text(', '.join(candidate.signals))}",
+            f"   - Repository workflow fit: {_markdown_text(', '.join(candidate.workflow_fit) if candidate.workflow_fit else 'no direct workflow match')}",
             f"   - Action risk: {candidate.risk_level}" + (f" ({', '.join(candidate.risk_signals)})" if candidate.risk_signals else ""),
+            f"   - Permission signals: {_markdown_text(', '.join(candidate.permission_signals) if candidate.permission_signals else 'none detected in published metadata')}",
+            f"   - Maintenance: {_markdown_text(candidate.maintenance)}",
+            f"   - Security review: {_markdown_text(candidate.security_review)}",
         ])
+        for client, result in candidate.compatibility.items():
+            lines.append(f"   - {client} compatibility: {_markdown_text(result)}")
         if candidate.repository:
-            lines.append(f"   - Repository: {safe(candidate.repository.get('url'))}")
-            lines.append(f"   - Repository screen: {safe(candidate.repository.get('status'))}")
+            lines.append(f"   - Repository: {_markdown_text(candidate.repository.get('url'))}")
+            lines.append(f"   - Repository screen: {_markdown_text(candidate.repository.get('status'))}")
             warnings = candidate.repository.get("warnings")
             if warnings:
-                lines.append(f"   - Repository warnings: {safe(' '.join(str(item) for item in warnings))}")
+                lines.append(f"   - Repository warnings: {_markdown_text(' '.join(str(item) for item in warnings))}")
         else:
             lines.append("   - Repository: unresolved; search and verify the server manually")
         lines.extend([f"   - Match score: {candidate.score:.1f}", ""])
     lines.extend([
         "## Interpretation", "",
-        "These results are discovery leads, not compatibility or security approvals. Cohere classified tool descriptions with a language model; it did not execute the tools. Action-risk labels come from a keyword classifier. Match scores are internal ranking values with no fixed maximum; they are not probabilities. Compare scores only within this report. Review source code, permissions, maintenance, data handling, and destructive actions before installation.", "",
+        "These results are discovery leads, not compatibility or security approvals. Compatibility states describe only transports named in published ATE metadata; the scanner did not install, authenticate to, or run a server. Cohere classified tool descriptions with a language model; it did not execute the tools. Action-risk and permission labels come from keyword classifiers. Match scores are internal ranking values with no fixed maximum; they are not probabilities. Compare scores only within this report. Review source code, permissions, maintenance, data handling, and destructive actions before installation.", "",
+    ])
+    return "\n".join(lines)
+
+
+def _review_label(value: object) -> str:
+    return _markdown_text(value, 240)
+
+
+def render_review_config(context: ProjectContext, candidates: list[Candidate]) -> str:
+    """Render inert client templates for human review without installing a server."""
+    lines = [
+        "# MCP configuration review bundle",
+        "",
+        f"Project: `{_review_label(context.root.name)}`",
+        "",
+        "Every suggested filename ends in `.review`, so no supported client loads it as an MCP configuration. The scanner did not install a package, start a server, change a client setting, or write into the scanned project.",
+        "",
+        "Before activation, verify the publisher's exact command or URL, replace the read-only placeholder with a documented server-side read-only mode, list every exposed tool, and remove every write-capable tool. Client approval prompts do not make an unknown server read-only.",
+        "",
+        "## Candidates to review",
+        "",
+    ]
+    for index, candidate in enumerate(candidates, 1):
+        name = _review_label(candidate.row.get("tool_name") or "Unnamed tool")
+        server = _review_label(candidate.row.get("server_name") or "Unknown server")
+        lines.extend([
+            f"{index}. **{name}** from **{server}** — workflow: "
+            f"{_review_label(', '.join(candidate.workflow_fit) if candidate.workflow_fit else 'no direct match')}; "
+            f"risk: {_review_label(candidate.risk_level)}; "
+            f"permissions: {_review_label(', '.join(candidate.permission_signals) if candidate.permission_signals else 'none detected')}; "
+            f"maintenance: {_review_label(candidate.maintenance)}.",
+            *[
+                f"   - {_review_label(client)}: {_review_label(result)}"
+                for client, result in candidate.compatibility.items()
+            ],
+            "",
+        ])
+    if not candidates:
+        lines.extend([
+            "No candidate passed the repository relevance filter, so this bundle contains no configuration.",
+            "",
+        ])
+    lines.extend([
+        "## Reusable client templates",
+        "",
+        "Replace every placeholder only after selecting and reviewing one candidate above.",
+        "",
+        "### Codex — `.codex/config.toml.review`",
+        "",
+        "```toml",
+        "[mcp_servers.reviewed-candidate]",
+        'command = "REPLACE_WITH_VERIFIED_SERVER_COMMAND"',
+        'args = ["REPLACE_WITH_DOCUMENTED_SERVER_READ_ONLY_ARGUMENT"]',
+        "enabled = false",
+        'enabled_tools = ["REPLACE_WITH_VERIFIED_READ_ONLY_TOOL"]',
+        'default_tools_approval_mode = "prompt"',
+        "```",
+        "",
+        "### Claude Code — `.mcp.json.review`",
+        "",
+        "```json",
+        json.dumps({
+            "mcpServers": {
+                "reviewed-candidate": {
+                    "command": "REPLACE_WITH_VERIFIED_SERVER_COMMAND",
+                    "args": ["REPLACE_WITH_DOCUMENTED_SERVER_READ_ONLY_ARGUMENT"],
+                    "env": {},
+                }
+            }
+        }, indent=2),
+        "```",
+        "",
+        "### Cursor — `.cursor/mcp.json.review`",
+        "",
+        "```json",
+        json.dumps({
+            "mcpServers": {
+                "reviewed-candidate": {
+                    "type": "stdio",
+                    "command": "REPLACE_WITH_VERIFIED_SERVER_COMMAND",
+                    "args": ["REPLACE_WITH_DOCUMENTED_SERVER_READ_ONLY_ARGUMENT"],
+                    "env": {},
+                }
+            }
+        }, indent=2),
+        "```",
+        "",
+        "### Grok Build — `.grok/config.toml.review`",
+        "",
+        "```toml",
+        "[mcp_servers.reviewed-candidate]",
+        'command = "REPLACE_WITH_VERIFIED_SERVER_COMMAND"',
+        'args = ["REPLACE_WITH_DOCUMENTED_SERVER_READ_ONLY_ARGUMENT"]',
+        "enabled = false",
+        "```",
+        "",
+        "## Activation gate",
+        "",
+        "Do not rename or copy a template until all checks pass:",
+        "",
+        "- The repository and package identity match the publisher's documentation.",
+        "- The server is maintained, licensed, and installed with a pinned version.",
+        "- The server-side read-only argument is real and tested. Remove the candidate if no read-only mode exists.",
+        "- The exposed tool list contains only reviewed read operations.",
+        "- Credentials have the minimum scopes and stay outside the configuration file.",
+        "- Network destinations and data retention are acceptable.",
+        "- The first run occurs in a disposable test project with approval prompts enabled.",
+        "",
     ])
     return "\n".join(lines)

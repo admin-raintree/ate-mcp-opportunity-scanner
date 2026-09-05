@@ -1,5 +1,7 @@
 import json
+import re
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -106,6 +108,11 @@ class RankingTests(unittest.TestCase):
         candidates = core.rank_candidates(self.context, self.rows, limit=2)
         self.assertEqual(candidates[0].row["tool_name"], "scan_accessibility")
 
+    def test_repository_workflow_contributes_to_candidate_fit(self):
+        self.context.workflows = {"Test and quality checks": ["test directory"]}
+        candidates = core.rank_candidates(self.context, self.rows, limit=2)
+        self.assertIn("Test and quality checks", candidates[0].workflow_fit)
+
     def test_destructive_tool_is_high_risk(self):
         level, signals = core.classify_risk("Delete an order and issue a refund")
         self.assertEqual(level, "high")
@@ -126,6 +133,74 @@ class RankingTests(unittest.TestCase):
         self.context.detected_agents = []
         report = core.render_report(self.context, [])
         self.assertIn("no recognized agent folders found", report)
+
+    def test_candidate_assessment_keeps_unverified_compatibility_bounded(self):
+        candidate = core.Candidate(
+            score=1,
+            row={
+                "tool_name": "query_database",
+                "server_name": "database-reader",
+                "tool_description": "Read database records through a local stdio server",
+                "github_pushed_at": "2026-08-01T00:00:00Z",
+            },
+            signals=[],
+            risk_level="medium",
+            risk_signals=["database"],
+        )
+        core.assess_candidate(candidate)
+        self.assertIn("possible via stdio", candidate.compatibility["Codex"])
+        self.assertIn("not tested", candidate.compatibility["Cursor"])
+        self.assertEqual(candidate.maintenance, "recently updated")
+        self.assertIn("database", candidate.permission_signals)
+        self.assertEqual(candidate.security_review, "required before use")
+
+    def test_unknown_transport_does_not_become_compatibility_claim(self):
+        candidate = core.Candidate(
+            score=1,
+            row={"tool_name": "search_docs", "tool_description": "Search documentation"},
+            signals=[],
+            risk_level="low",
+            risk_signals=[],
+        )
+        core.assess_candidate(candidate)
+        self.assertTrue(all(value.startswith("unknown") for value in candidate.compatibility.values()))
+
+    def test_review_bundle_is_inert_and_approval_gated(self):
+        candidate = core.Candidate(
+            score=1,
+            row={"tool_name": "search_docs", "server_name": "docs"},
+            signals=[],
+            risk_level="low",
+            risk_signals=[],
+        )
+        core.assess_candidate(candidate)
+        bundle = core.render_review_config(self.context, [candidate])
+        self.assertIn(".review", bundle)
+        self.assertIn("enabled = false", bundle)
+        self.assertIn('default_tools_approval_mode = "prompt"', bundle)
+        self.assertIn("REPLACE_WITH_DOCUMENTED_SERVER_READ_ONLY_ARGUMENT", bundle)
+        self.assertNotIn("/tmp/dashboard", bundle)
+        json_blocks = re.findall(r"```json\n(.*?)\n```", bundle, re.DOTALL)
+        toml_blocks = re.findall(r"```toml\n(.*?)\n```", bundle, re.DOTALL)
+        self.assertEqual(len(json_blocks), 2)
+        self.assertEqual(len(toml_blocks), 2)
+        for block in json_blocks:
+            json.loads(block)
+        for block in toml_blocks:
+            tomllib.loads(block)
+
+    def test_review_bundle_does_not_embed_an_untrusted_tool_name_in_config(self):
+        candidate = core.Candidate(
+            score=1,
+            row={"tool_name": "bad```\n[open](https://attacker.invalid)", "server_name": "docs"},
+            signals=[],
+            risk_level="low",
+            risk_signals=[],
+        )
+        core.assess_candidate(candidate)
+        bundle = core.render_review_config(self.context, [candidate])
+        self.assertIn('enabled_tools = ["REPLACE_WITH_VERIFIED_READ_ONLY_TOOL"]', bundle)
+        self.assertNotIn("enabled_tools = [\"bad```", bundle)
 
     def test_report_shortens_descriptions_at_a_word_boundary(self):
         candidate = core.Candidate(
@@ -184,30 +259,11 @@ class CatalogTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             core, "_request_json", side_effect=responses
-        ), mock.patch.object(core.shutil, "which", return_value=None):
+        ):
             destination = Path(directory) / "catalog.jsonl"
             core.download_catalog(destination)
             rows = list(core.iter_catalog(destination))
             self.assertEqual([row["tool_name"] for row in rows], ["one", "two"])
-
-    def test_dataset_download_rejects_untrusted_host(self):
-        with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaises(RuntimeError):
-                core._download_file(
-                    "https://attacker.invalid/catalog.parquet",
-                    Path(directory) / "catalog.parquet",
-                    100,
-                )
-
-    def test_catalog_does_not_execute_duckdb_from_working_directory(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-            core.shutil, "which", return_value=str(Path(directory) / "duckdb")
-        ), mock.patch.object(core, "_download_catalog_via_api") as fallback, mock.patch.object(
-            core.Path, "cwd", return_value=Path(directory)
-        ):
-            destination = Path(directory) / "catalog.jsonl"
-            core.download_catalog(destination)
-            fallback.assert_called_once_with(destination)
 
     def test_offline_enrichment_rejects_untrusted_repository_url(self):
         candidate = core.Candidate(
@@ -219,6 +275,23 @@ class CatalogTests(unittest.TestCase):
         )
         core.enrich_candidates([candidate], offline=True)
         self.assertIsNone(candidate.repository)
+
+
+class WorkflowDetectionTests(unittest.TestCase):
+    def test_detects_workflow_surfaces_without_retaining_script_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            (root / ".github" / "workflows").mkdir(parents=True)
+            (root / "package.json").write_text(json.dumps({
+                "scripts": {"test:e2e": "secret-command --token hiddenvalue"}
+            }))
+            context = core.collect_context(root)
+            self.assertIn("Test and quality checks", context.workflows)
+            self.assertIn("Continuous integration", context.workflows)
+            rendered = json.dumps(context.workflows)
+            self.assertNotIn("secret-command", rendered)
+            self.assertNotIn("hiddenvalue", rendered)
 
 
 if __name__ == "__main__":

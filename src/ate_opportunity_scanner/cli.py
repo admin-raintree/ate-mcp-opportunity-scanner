@@ -15,6 +15,7 @@ from .core import (
     iter_catalog,
     rank_candidates,
     render_report,
+    render_review_config,
 )
 
 
@@ -24,7 +25,7 @@ def parser() -> argparse.ArgumentParser:
         description="Recommend candidate MCP tools from local project metadata.",
     )
     result.add_argument("paths", nargs="+", type=Path, help="Project folders to scan")
-    result.add_argument("--catalog", type=Path, help="Use a local ATE JSONL or CSV catalog")
+    result.add_argument("--catalog", type=Path, help="Use a local ATE JSONL catalog")
     result.add_argument("--refresh-catalog", action="store_true", help="Refresh the official ATE cache")
     result.add_argument("--top", type=int, default=10, help="Candidates per project (default: 10)")
     result.add_argument("--max-files", type=int, default=1_000, help="Maximum filenames per project")
@@ -35,6 +36,11 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--offline", action="store_true", help="Skip repository lookups; requires a cached or local catalog")
     result.add_argument("--output", type=Path, help="Write Markdown to this file")
+    result.add_argument(
+        "--review-config",
+        type=Path,
+        help="Write an inert, read-only-first MCP configuration review bundle",
+    )
     return result
 
 
@@ -43,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     arguments = argument_parser.parse_args(argv)
     if arguments.top < 1 or arguments.top > 100:
         argument_parser.error("[ATE100] --top must be between 1 and 100. Choose a whole number in that range")
+    if arguments.output and arguments.review_config:
+        if arguments.output.expanduser().resolve() == arguments.review_config.expanduser().resolve():
+            argument_parser.error("[ATE100] --output and --review-config must use different files")
     catalog = arguments.catalog or default_cache_path()
     if not catalog.is_file():
         if arguments.offline:
@@ -68,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     reports: list[str] = []
+    review_bundles: list[str] = []
     for supplied in arguments.paths:
         try:
             context = collect_context(
@@ -86,10 +96,11 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError, json.JSONDecodeError, AttributeError, TypeError) as error:
             argument_parser.error(
                 f"[ATE104] The catalog at {catalog} could not be read: {type(error).__name__}. "
-                "Pass --catalog with a valid ATE JSONL or CSV file"
+                "Pass --catalog with a valid ATE JSONL file"
             )
         enrich_candidates(candidates, offline=arguments.offline)
         reports.append(render_report(context, candidates))
+        review_bundles.append(render_review_config(context, candidates))
     if not reports:
         print(
             "[ATE105] No project was scanned. Correct the listed project paths and run the command again.",
@@ -110,4 +121,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote {arguments.output}", file=sys.stderr)
     else:
         print(rendered)
+    if arguments.review_config:
+        try:
+            arguments.review_config.write_text(
+                "\n\n---\n\n".join(review_bundles) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as error:
+            print(
+                f"[ATE107] The configuration review bundle could not be written to {arguments.review_config}: "
+                f"{type(error).__name__}. No client configuration was changed. Choose a new writable path and run the command again.",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"Wrote inert configuration review bundle to {arguments.review_config}", file=sys.stderr)
     return 0

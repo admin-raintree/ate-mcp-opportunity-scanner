@@ -14,9 +14,12 @@ Use it to:
 
 - Find possible automation, testing, documentation, data, and deployment integrations.
 - Compare opportunities across several repositories.
+- Rank candidates against concrete repository workflows such as tests, documentation, continuous integration, packaging, migrations, and deployment.
 - Optionally detect Codex, Claude Code, Cursor, or Grok-compatible configuration folders.
 - Optionally avoid recommending exact server names already present in recognized MCP configurations.
-- Screen recommendations for destructive actions, missing licenses, archived repositories, and stale maintenance.
+- Report transport-based compatibility evidence for Codex, Claude Code, Cursor, and Grok Build without claiming that an untested server works.
+- Screen recommendations for permission signals, destructive actions, missing licenses, archived repositories, and stale maintenance.
+- Generate an inert configuration review bundle that keeps every candidate disabled or outside a live client configuration.
 
 ## Privacy model
 
@@ -45,11 +48,9 @@ rm "${XDG_CACHE_HOME:-$HOME/.cache}/ate-mcp-opportunity-scanner/onet-good.jsonl"
 - Python 3.11 or later
 - Internet access on the first run to read the official ATE dataset
 
-The scanner has no required third-party Python packages.
+The scanner has no third-party runtime dependencies.
 
-When the optional `duckdb` command is available, the scanner downloads the official Parquet files and extracts matching rows locally. It deletes those Parquet files after extraction and retains the public JSONL cache described above.
-
-Without `duckdb`, the scanner requests catalog pages concurrently from the official Hugging Face filter API. Upstream availability and rate limits determine the completion time.
+The scanner requests catalog pages concurrently from the official Hugging Face filter API. Upstream availability and rate limits determine the completion time.
 
 ## Install
 
@@ -106,7 +107,17 @@ Check recognized Codex, Claude Code, Cursor, and Grok configuration folders and 
 .venv/bin/ate-scan ~/Code/project-one --include-agent-configs --output recommendations.md
 ```
 
-The first online run requests rows classified as `good` directly from Hugging Face's Dataset Viewer API and stores them in the public-data cache described under [Privacy model](#privacy-model). A successful run writes the requested report and prints its location. This repository does not redistribute Cohere's dataset or upstream tool descriptions.
+Create a report and a separate configuration review bundle:
+
+```shell
+.venv/bin/ate-scan ~/Code/project-one \
+  --output recommendations.md \
+  --review-config mcp-configuration-review.md
+```
+
+The review bundle lists the candidates and provides one reusable template for each of Codex, Claude Code, Cursor, and Grok Build. Every suggested filename ends in `.review`. Codex and Grok templates also set `enabled = false`. Commands and read-only arguments remain explicit placeholders. The scanner does not write into the scanned project or change a client configuration.
+
+The first online run requests rows classified as `good` from Hugging Face's Dataset Viewer API and stores the resulting public-data cache described under [Privacy model](#privacy-model). A successful run writes the requested files and prints their locations. This repository does not redistribute Cohere's dataset or upstream tool descriptions.
 
 ## Read the report
 
@@ -114,9 +125,13 @@ Each candidate includes:
 
 - The published MCP tool description
 - The project signals that contributed to its rank
+- The concrete repository workflows it may support
 - A low, medium, or high action-risk label
+- Permission signals inferred from published metadata
+- Transport-based compatibility evidence for each supported client
 - A repository link when it can be resolved
-- Repository maintenance and license warnings when available
+- A maintenance state and repository or license warnings when available
+- A security-review priority
 
 Review every candidate before installation. A low action-risk label is not a security audit.
 
@@ -128,6 +143,8 @@ After reviewing a candidate, follow the [agent-specific MCP setup guide](docs/ag
 - Some ATE classifications are implausible or overly broad.
 - The local ranker combines term weighting with a small capability map. It does not understand a repository as deeply as a code reviewer.
 - Repository screening cannot detect malicious code or prove compatibility.
+- ATE metadata often omits the MCP transport. The scanner reports compatibility as unknown in that case.
+- Client approval prompts and disabled templates do not prove that a server is read-only. A reviewer must verify and test a server-specific read-only mode before activation.
 - The agent configuration check reports configuration-folder presence. It does not prove that an agent supports a recommended MCP server.
 - Hugging Face may rate-limit or temporarily delay the first catalog build.
 
@@ -152,6 +169,10 @@ User-facing failure codes and recovery actions are documented in the [error refe
 - [Cohere Labs ATE dataset](https://huggingface.co/datasets/CohereLabs/ATE)
 - [Automation's Early Footprint](https://cohere.com/blog/automations-early-footprint)
 - [Hugging Face Dataset Viewer filter API](https://huggingface.co/docs/dataset-viewer/filter)
+- [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+- [Claude Code MCP configuration](https://code.claude.com/docs/en/mcp)
+- [Cursor MCP configuration](https://cursor.com/docs/mcp)
+- [Grok Build MCP configuration](https://docs.x.ai/build/features/mcp-servers)
 
 ## Evaluation
 
