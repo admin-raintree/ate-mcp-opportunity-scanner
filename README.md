@@ -32,7 +32,7 @@ It reads:
 
 It skips `.env` files, credential files, private keys, symlinks, large files, source-file contents, conversation histories, and common generated folders. It sends public dataset queries to Hugging Face and public candidate repository identifiers to GitHub. It does not send project names, paths, metadata, matching signals, or reports to either service. See the [security and privacy model](SECURITY.md) for the full boundary.
 
-The scanner writes a report only when you name an output file. That report can contain the selected project's folder name, detected capability classes, the number of configured MCP server names, and recommendations. The report remains at the selected location until you delete it.
+The scanner prints its report to the terminal by default. When you pass `--output`, it writes the report to that file instead. The report can contain the selected project's folder name, detected capability classes, the number of configured MCP server names, and recommendations. Terminal output can remain in shell history or captured logs. An output file remains at the selected location until you delete it.
 
 The scanner caches only public ATE data at `${XDG_CACHE_HOME:-$HOME/.cache}/ate-mcp-opportunity-scanner/onet-good.jsonl`. It does not place project metadata in that cache. Delete the cache with:
 
@@ -100,7 +100,7 @@ Inspect only local data after the official catalog has been cached:
 .venv/bin/ate-scan ~/Code/project-one --offline --output recommendations.md
 ```
 
-Compare recognized Codex, Claude Code, Cursor, and Grok configuration keys without reading their values:
+Check recognized Codex, Claude Code, Cursor, and Grok configuration folders and configured MCP server names without reading configuration values:
 
 ```shell
 .venv/bin/ate-scan ~/Code/project-one --include-agent-configs --output recommendations.md
