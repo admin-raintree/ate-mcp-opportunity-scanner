@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1 — 2026-09-04
+
+- Define MCP tools and MCP servers consistently.
+- Make installation and agent-connection procedures executable and verifiable.
+- Replace unsupported performance and relevance claims with bounded evidence.
+- Document local report and cache retention, network recipients, and deletion.
+- Add stable error codes with recovery actions for command-line failures.
+
 ## 0.1.0 — 2026-09-04
 
 - Scan user-selected project metadata without uploading project content.

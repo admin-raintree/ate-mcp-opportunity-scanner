@@ -1,6 +1,6 @@
 # ATE MCP Opportunity Scanner
 
-Find public Model Context Protocol (MCP) tools that may fit your local projects and agent setup.
+Find public Model Context Protocol (MCP) tools that may fit your local projects and agent setup. An MCP tool is a callable function. An MCP server provides one or more MCP tools.
 
 The scanner reads a limited set of project metadata on your computer, compares it with Cohere Labs' Agentic Task Ecosystem (ATE), and writes a ranked candidate report. It does not install or execute MCP servers. It does not upload project content.
 
@@ -8,7 +8,7 @@ The scanner reads a limited set of project metadata on your computer, compares i
 
 ## Why use it
 
-Public MCP directories contain hundreds of thousands of functions. A long catalog does not tell you which functions fit your work. This scanner starts with your project and answers a narrower question: which published tools appear relevant enough to investigate?
+On September 4, 2026, the official [ATE dataset endpoint](https://huggingface.co/datasets/CohereLabs/ATE) returned 18,058 tool-to-task matches classified as `good`. A catalog still does not tell you which MCP tools fit your work. This scanner starts with your project and identifies published MCP tools that may be relevant enough to investigate.
 
 Use it to:
 
@@ -20,7 +20,7 @@ Use it to:
 
 ## Privacy model
 
-The scanner accepts only the folders that you name. It does not scan a filesystem root. It reads recognized agent configuration keys outside those folders only when you pass `--include-agent-configs`.
+The scanner accepts only the folders that you name. It does not scan a filesystem root. When you pass `--include-agent-configs`, it also checks for recognized agent configuration folders and reads configured MCP server names. It does not read commands, arguments, URLs, headers, or environment values from those external configurations.
 
 It reads:
 
@@ -30,7 +30,15 @@ It reads:
 - Keys—but not values—from MCP and agent JSON configuration files.
 - MCP server table names—but not commands, arguments, URLs, environment values, or headers—from recognized JSON and TOML configurations.
 
-It skips `.env` files, credential files, private keys, symlinks, large files, source-file contents, conversation histories, and common generated folders. Repository-health requests contain only public candidate repository identifiers. See [SECURITY.md](SECURITY.md) for the full trust model.
+It skips `.env` files, credential files, private keys, symlinks, large files, source-file contents, conversation histories, and common generated folders. It sends public dataset queries to Hugging Face and public candidate repository identifiers to GitHub. It does not send project names, paths, metadata, matching signals, or reports to either service. See the [security and privacy model](SECURITY.md) for the full boundary.
+
+The scanner writes a report only when you name an output file. That report can contain the selected project's folder name, detected capability classes, the number of configured MCP server names, and recommendations. The report remains at the selected location until you delete it.
+
+The scanner caches only public ATE data at `${XDG_CACHE_HOME:-$HOME/.cache}/ate-mcp-opportunity-scanner/onet-good.jsonl`. It does not place project metadata in that cache. Delete the cache with:
+
+```shell
+rm "${XDG_CACHE_HOME:-$HOME/.cache}/ate-mcp-opportunity-scanner/onet-good.jsonl"
+```
 
 ## Requirements
 
@@ -39,18 +47,38 @@ It skips `.env` files, credential files, private keys, symlinks, large files, so
 
 The scanner has no required third-party Python packages.
 
-The optional `duckdb` command makes the first catalog build much faster. When it is available, the scanner downloads about 150 MB of official Parquet data, extracts the 18,058 matching rows, deletes the Parquet files, and retains a local cache of about 15 MB. Two measured development-machine runs completed in 26 and 53 seconds. Network and computer performance will change this time.
+When the optional `duckdb` command is available, the scanner downloads the official Parquet files and extracts matching rows locally. It deletes those Parquet files after extraction and retains the public JSONL cache described above.
 
-Without `duckdb`, the scanner uses the official Hugging Face filter API. That fallback can be much slower when the upstream index is cold.
+Without `duckdb`, the scanner requests catalog pages concurrently from the official Hugging Face filter API. Upstream availability and rate limits determine the completion time.
 
 ## Install
 
-```shell
-git clone https://github.com/admin-raintree/ate-mcp-opportunity-scanner.git
-cd ate-mcp-opportunity-scanner
-python3 -m venv .venv
-.venv/bin/python -m pip install .
-```
+1. Clone the repository.
+
+   ```shell
+   git clone https://github.com/admin-raintree/ate-mcp-opportunity-scanner.git
+   ```
+
+2. Enter the repository and create a virtual environment.
+
+   ```shell
+   cd ate-mcp-opportunity-scanner
+   python3 -m venv .venv
+   ```
+
+3. Install the scanner.
+
+   ```shell
+   .venv/bin/python -m pip install .
+   ```
+
+4. Confirm that the command is available.
+
+   ```shell
+   .venv/bin/ate-scan --help
+   ```
+
+   The command succeeds when it prints usage information beginning with `usage: ate-scan`.
 
 ## Scan projects
 
@@ -78,13 +106,13 @@ Compare recognized Codex, Claude Code, Cursor, and Grok configuration keys witho
 .venv/bin/ate-scan ~/Code/project-one --include-agent-configs --output recommendations.md
 ```
 
-The first online run requests the rows classified as `good` directly from Hugging Face's Dataset Viewer API and stores them under your user cache. This repository does not redistribute Cohere's dataset or upstream tool descriptions.
+The first online run requests rows classified as `good` directly from Hugging Face's Dataset Viewer API and stores them in the public-data cache described under [Privacy model](#privacy-model). A successful run writes the requested report and prints its location. This repository does not redistribute Cohere's dataset or upstream tool descriptions.
 
 ## Read the report
 
 Each candidate includes:
 
-- A possible use based on the published description
+- The published MCP tool description
 - The project signals that contributed to its rank
 - A low, medium, or high action-risk label
 - A repository link when it can be resolved
@@ -100,7 +128,7 @@ After reviewing a candidate, follow the [agent-specific MCP setup guide](docs/ag
 - Some ATE classifications are implausible or overly broad.
 - The local ranker combines term weighting with a small capability map. It does not understand a repository as deeply as a code reviewer.
 - Repository screening cannot detect malicious code or prove compatibility.
-- Agent detection reports configuration-folder presence. It does not prove that an agent supports a recommended server.
+- The agent configuration check reports configuration-folder presence. It does not prove that an agent supports a recommended MCP server.
 - Hugging Face may rate-limit or temporarily delay the first catalog build.
 
 ## Data and licenses
@@ -117,6 +145,8 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change.
 
+User-facing failure codes and recovery actions are documented in the [error reference](docs/errors.md).
+
 ## Sources
 
 - [Cohere Labs ATE dataset](https://huggingface.co/datasets/CohereLabs/ATE)
@@ -125,4 +155,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change.
 
 ## Evaluation
 
-See [EVALUATION.md](EVALUATION.md) for the current development-sample results. The evaluation measures discovery relevance, not compatibility or safety.
+See the [evaluation record](EVALUATION.md) for the available evidence, known gaps, and release criteria.

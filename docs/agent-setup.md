@@ -2,52 +2,89 @@
 
 Use this guide only after you review a candidate's source, permissions, data destinations, maintenance, and installation instructions. The scanner does not verify that a server works with your agent.
 
-Keep credentials in environment variables or the agent's supported credential store. Do not commit secrets to a project configuration.
+Keep credentials in environment variables or the agent's supported credential store. Do not commit secrets to a project configuration. Obtain the server command, arguments, and authentication instructions from the reviewed server's publisher before you begin.
 
 ## Codex
 
-Codex supports local STDIO servers and remote Streamable HTTP servers. The ChatGPT desktop app, Codex CLI, and Codex IDE extension share host configuration.
+Codex supports local standard input/output (STDIO) servers and remote Streamable HTTP servers. The ChatGPT desktop app, Codex CLI, and Codex IDE extension share host configuration.
 
-Add a local STDIO server:
+1. Add the reviewed local STDIO server with the publisher's command and arguments.
 
-```shell
-codex mcp add <server-name> -- <server-command> <arguments>
-codex mcp list
-```
+   ```shell
+   codex mcp add <server-name> -- <server-command> <arguments>
+   ```
+
+2. Confirm that Codex lists the server.
+
+   ```shell
+   codex mcp list
+   ```
+
+   Registration succeeds when `<server-name>` appears in the list. If it does not appear, follow the troubleshooting guidance in the official documentation below.
 
 Codex stores user configuration in `~/.codex/config.toml`. Trusted projects can use `.codex/config.toml`. Use environment-variable references for credentials and keep write-capable tools in prompt-based approval mode until you establish trust.
 
 Follow the [official Codex MCP documentation](https://developers.openai.com/codex/mcp) for remote servers, OAuth, tool allowlists, and approval controls.
 
+Remove the server later with `codex mcp remove <server-name>`, then confirm its absence with `codex mcp list`.
+
 ## Claude Code
 
-Add a local STDIO server:
+1. Add the reviewed local STDIO server with the publisher's command and arguments.
 
-```shell
-claude mcp add <server-name> -- <server-command> <arguments>
-claude mcp list
-```
+   ```shell
+   claude mcp add <server-name> -- <server-command> <arguments>
+   ```
+
+2. Confirm that Claude Code lists the server.
+
+   ```shell
+   claude mcp list
+   ```
+
+   Registration succeeds when `<server-name>` appears in the list. If it does not appear, follow the troubleshooting guidance in the official documentation below.
 
 Claude Code supports local, project, and user scopes. Project-scoped servers use `.mcp.json` and require project approval. Keep machine-specific credentials outside the shared file.
 
 Follow the [official Claude Code MCP documentation](https://docs.anthropic.com/en/docs/claude-code/mcp) for scopes, remote transports, OAuth, and configuration import.
 
+Remove the server later with `claude mcp remove <server-name> -s <scope>`. Use the same `local`, `project`, or `user` scope that you selected when adding it, then confirm its absence with `claude mcp list`.
+
 ## Cursor
 
-Cursor supports one-click MCP installation and custom `mcp.json` configuration. Use its interface when a reviewed server provides an official installation link. Otherwise, create the configuration using the server publisher's documented command or remote URL.
+Cursor supports one-click MCP installation and custom `mcp.json` configuration.
 
-Follow the [official Cursor MCP documentation](https://docs.cursor.com/context/model-context-protocol) for supported transports, configuration locations, and authentication.
+1. Use Cursor's MCP interface when the reviewed server provides an official installation link. Otherwise, add the publisher's documented command or remote URL to `mcp.json`.
+2. Open Cursor's MCP settings and confirm that `<server-name>` appears as enabled. If it does not appear, follow the troubleshooting guidance in the official documentation below.
+
+Follow the [official Cursor MCP documentation](https://cursor.com/docs/mcp) for supported transports, configuration locations, and authentication.
+
+Remove the server later from the same MCP settings interface or `mcp.json` file, then confirm that it no longer appears as enabled.
 
 ## Grok Build
 
-Add a local STDIO server:
+1. Add the reviewed local STDIO server with the publisher's command and arguments.
 
-```shell
-grok mcp add <server-name> -- <server-command> <arguments>
-grok inspect
-grok mcp doctor
-```
+   ```shell
+   grok mcp add <server-name> -- <server-command> <arguments>
+   ```
+
+2. List the configured MCP servers.
+
+   ```shell
+   grok mcp list
+   ```
+
+   Registration succeeds when `<server-name>` appears in the list.
+
+3. Diagnose the server if it does not appear or start.
+
+   ```shell
+   grok mcp doctor
+   ```
 
 Grok Build stores user settings in `~/.grok/config.toml` and project MCP settings in `.grok/config.toml`. It can also load compatible Claude and Cursor MCP configurations. Use environment-variable expansion instead of literal credentials.
 
 Follow the [official Grok Build MCP documentation](https://docs.x.ai/build/features/mcp-servers) for scopes, configuration precedence, remote servers, and troubleshooting.
+
+Remove the server later with `grok mcp remove <server-name>`, then run `grok mcp list` to confirm its absence.

@@ -116,6 +116,28 @@ class RankingTests(unittest.TestCase):
         report = core.render_report(self.context, [candidate])
         self.assertNotIn("/tmp/dashboard", report)
         self.assertIn("MCP opportunities for dashboard", report)
+        self.assertIn("An MCP tool is a callable function", report)
+        self.assertIn("until you delete it", report)
+        self.assertIn("Agent configuration check: not requested", report)
+        self.assertIn("Considered", report)
+
+    def test_report_distinguishes_checked_agent_configuration(self):
+        self.context.agent_configs_checked = True
+        self.context.detected_agents = []
+        report = core.render_report(self.context, [])
+        self.assertIn("no recognized agent folders found", report)
+
+    def test_report_shortens_descriptions_at_a_word_boundary(self):
+        candidate = core.Candidate(
+            score=1,
+            row={"tool_name": "long", "server_name": "example", "tool_description": "word " * 120},
+            signals=[],
+            risk_level="low",
+            risk_signals=[],
+        )
+        report = core.render_report(self.context, [candidate])
+        description_line = next(line for line in report.splitlines() if "Published description:" in line)
+        self.assertTrue(description_line.endswith("word…"))
 
     def test_report_escapes_untrusted_markdown(self):
         candidate = core.Candidate(

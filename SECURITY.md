@@ -2,7 +2,7 @@
 
 ## Report a vulnerability
 
-Do not open a public issue for a suspected vulnerability. Send a private report through GitHub's private vulnerability reporting feature when it is available for this repository.
+Do not open a public issue for a suspected vulnerability. Send a report through [GitHub's private vulnerability reporting form](https://github.com/admin-raintree/ate-mcp-opportunity-scanner/security/advisories/new).
 
 Include the affected version, reproduction steps, impact, and any suggested remediation. Do not include credentials or private project content.
 
@@ -22,6 +22,7 @@ The scanner must:
 - Avoid sending project content, project terms, paths, or scanner reports to network services.
 - Send only public ATE identifiers and public repository identifiers when resolving candidate metadata.
 - Keep scanner reports local unless the user publishes them.
+- Retain public ATE data only in the documented user cache until the user refreshes or deletes it.
 
 ## Candidate screening
 

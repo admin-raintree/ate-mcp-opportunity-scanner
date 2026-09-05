@@ -117,6 +117,30 @@ OPPORTUNITY_PROFILES = {
         {"testing", "review", "debug", "refactor", "coverage", "dependency", "analysis", "quality"},
     ),
 }
+WORKFLOW_PROFILES = {
+    "Test and quality checks": {"test", "tests", "pytest", "playwright", "jest", "lint", "ruff", "coverage"},
+    "Build and package": {"build", "package", "compile", "bundle", "setuptools", "docker"},
+    "Continuous integration": {"workflow", "workflows", "actions", "ci", "github"},
+    "Documentation maintenance": {"docs", "documentation", "readme", "markdown", "mkdocs"},
+    "Database changes": {"migration", "migrations", "alembic", "schema", "database", "sql"},
+    "Deployment and operations": {"deploy", "deployment", "release", "terraform", "docker", "cloud"},
+}
+CLIENT_TRANSPORTS = {
+    "Codex": {"stdio", "http"},
+    "Claude Code": {"stdio", "http", "sse", "websocket"},
+    "Cursor": {"stdio", "http", "sse"},
+    "Grok Build": {"stdio", "http"},
+}
+PERMISSION_SIGNALS = {
+    "credentials": {"credential", "credentials", "secret", "token", "oauth", "authentication"},
+    "filesystem": {"file", "files", "filesystem", "directory", "folder"},
+    "code execution": {"execute", "shell", "terminal", "command", "script", "sudo"},
+    "network": {"network", "http", "browser", "download", "upload", "api"},
+    "database": {"database", "query", "schema", "migration", "postgres", "mysql", "sqlite"},
+    "communications": {"email", "message", "send", "publish", "post"},
+    "payments or trading": {"payment", "purchase", "refund", "trade", "transaction"},
+    "deployment": {"deploy", "deployment", "infrastructure", "cloud"},
+}
 AGGREGATOR_MARKERS = {"awesome", "skillranking", "ecosystem", "collection", "directory"}
 HIGH_RISK_TERMS = {
     "delete", "irreversible", "payment", "purchase", "refund", "shell", "terminal",
@@ -141,7 +165,9 @@ class ProjectContext:
     metadata_files: list[str] = field(default_factory=list)
     detected_agents: list[str] = field(default_factory=list)
     opportunities: list[str] = field(default_factory=list)
+    workflows: dict[str, list[str]] = field(default_factory=dict)
     installed_servers: set[str] = field(default_factory=set)
+    agent_configs_checked: bool = False
     files_seen: int = 0
     files_skipped: int = 0
 
@@ -154,6 +180,11 @@ class Candidate:
     risk_level: str
     risk_signals: list[str]
     repository: dict[str, object] | None = None
+    workflow_fit: list[str] = field(default_factory=list)
+    compatibility: dict[str, str] = field(default_factory=dict)
+    maintenance: str = "unknown"
+    permission_signals: list[str] = field(default_factory=list)
+    security_review: str = "required"
 
 
 def tokenize(text: str) -> Counter[str]:
@@ -177,6 +208,56 @@ def expand_capabilities(terms: Counter[str]) -> None:
         for related in CAPABILITY_EXPANSIONS.get(term, set()):
             additions[related] += max(1, count // 2)
     terms.update(additions)
+
+
+def detect_workflows(root: Path, terms: Counter[str]) -> dict[str, list[str]]:
+    """Identify concrete workflow surfaces without retaining commands or file contents."""
+    evidence: dict[str, list[str]] = {}
+    sources: dict[str, str] = {}
+    if (root / "tests").is_dir() or (root / "test").is_dir():
+        sources["tests"] = "test directory"
+    if (root / ".github" / "workflows").is_dir():
+        sources["workflow"] = "GitHub Actions configuration"
+    if any((root / name).exists() for name in ("Dockerfile", "docker-compose.yml", "docker-compose.yaml")):
+        sources["docker"] = "container configuration"
+    if any((root / name).is_dir() for name in ("docs", "documentation")):
+        sources["docs"] = "documentation directory"
+    if any((root / name).is_dir() for name in ("migrations", "alembic")):
+        sources["migration"] = "migration directory"
+
+    package = root / "package.json"
+    try:
+        package_data = json.loads(package.read_text(encoding="utf-8")) if package.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        package_data = {}
+    scripts = package_data.get("scripts", {}) if isinstance(package_data, dict) else {}
+    if isinstance(scripts, dict):
+        for name in scripts:
+            for token in tokenize(str(name)):
+                sources.setdefault(token, "package.json script name")
+
+    project_file = root / "pyproject.toml"
+    try:
+        import tomllib
+        project_data = tomllib.loads(project_file.read_text(encoding="utf-8")) if project_file.is_file() else {}
+    except (OSError, ValueError, TypeError):
+        project_data = {}
+    if isinstance(project_data, dict):
+        tool_names = project_data.get("tool", {})
+        if isinstance(tool_names, dict):
+            for name in tool_names:
+                sources.setdefault(str(name).lower(), "pyproject.toml tool configuration")
+        project_scripts = project_data.get("project", {}).get("scripts", {}) if isinstance(project_data.get("project"), dict) else {}
+        if isinstance(project_scripts, dict) and project_scripts:
+            sources.setdefault("package", "Python command entry point")
+
+    observed_terms = set(terms).union(sources)
+    for workflow, triggers in WORKFLOW_PROFILES.items():
+        hits = sorted(observed_terms.intersection(triggers))
+        if hits:
+            workflow_sources = sorted({sources.get(hit, "repository metadata") for hit in hits})
+            evidence[workflow] = workflow_sources
+    return evidence
 
 
 def _approved_json_metadata(path: Path, value: object) -> list[str]:
@@ -318,6 +399,7 @@ def collect_context(
         root=root,
         detected_agents=detect_agents() if include_agent_configs else [],
         installed_servers=detected_server_names() if include_agent_configs else set(),
+        agent_configs_checked=include_agent_configs,
     )
     context.terms.update(tokenize(root.name))
     for current, directory_names, file_names in os.walk(root, followlinks=False):
@@ -764,23 +846,36 @@ def render_report(context: ProjectContext, candidates: list[Candidate]) -> str:
             text = text.replace(character, f"\\{character}")
         return text
 
+    def shortened(value: object, limit: int = 500) -> str:
+        text = re.sub(r"\s+", " ", str(value)).strip()
+        if len(text) <= limit:
+            return text
+        boundary = text.rfind(" ", 0, limit - 1)
+        return text[:boundary if boundary > 0 else limit - 1].rstrip() + "…"
+
+    if context.agent_configs_checked:
+        agent_status = ", ".join(context.detected_agents) if context.detected_agents else "no recognized agent folders found"
+    else:
+        agent_status = "not requested; pass --include-agent-configs to check"
+
     lines = [
         f"# MCP opportunities for {safe(context.root.name)}", "",
-        f"Scanned locally at {datetime.now(timezone.utc).isoformat()}. No project content was uploaded.", "",
-        f"Detected agent surfaces: {', '.join(context.detected_agents) if context.detected_agents else 'none'}", "",
+        "An MCP tool is a callable function. An MCP server provides one or more MCP tools.", "",
+        f"Scanned locally at {datetime.now(timezone.utc).isoformat()}. No project content was uploaded. This report remains at the location you selected until you delete it.", "",
+        f"Agent configuration check: {agent_status}", "",
         f"Opportunity classes: {', '.join(context.opportunities) if context.opportunities else 'no strong signal'}", "",
-        f"Existing MCP server names compared without reading configuration values: {len(context.installed_servers)}", "",
-        f"Reviewed {context.files_seen} filenames and {len(context.metadata_files)} approved metadata files.", "",
+        f"Configured MCP server names found in the scanned scope: {len(context.installed_servers)}", "",
+        f"Considered {context.files_seen} filenames and read {len(context.metadata_files)} approved metadata files.", "",
         "## Candidates", "",
     ]
     for index, candidate in enumerate(candidates, 1):
         row = candidate.row
         name = safe(row.get("tool_name") or "Unnamed tool")
         server = safe(row.get("server_name") or "Unknown server")
-        description = safe(re.sub(r"\s+", " ", str(row.get("tool_description") or row.get("task_text") or "No description"))[:500])
+        description = safe(shortened(row.get("tool_description") or row.get("task_text") or "No description"))
         lines.extend([
             f"{index}. **{name}** from **{server}**", "",
-            f"   - Possible use: {description}",
+            f"   - Published description: {description}",
             f"   - Matching signals: {safe(', '.join(candidate.signals))}",
             f"   - Action risk: {candidate.risk_level}" + (f" ({', '.join(candidate.risk_signals)})" if candidate.risk_signals else ""),
         ])
@@ -795,6 +890,6 @@ def render_report(context: ProjectContext, candidates: list[Candidate]) -> str:
         lines.extend([f"   - Match score: {candidate.score:.1f}", ""])
     lines.extend([
         "## Interpretation", "",
-        "These results are discovery leads, not compatibility or security approvals. Cohere classified tool descriptions with a language model; it did not execute the tools. Review source code, permissions, maintenance, data handling, and destructive actions before installation.", "",
+        "These results are discovery leads, not compatibility or security approvals. Cohere classified tool descriptions with a language model; it did not execute the tools. Action-risk labels come from a keyword classifier. Match scores are internal ranking values with no fixed maximum; they are not probabilities. Compare scores only within this report. Review source code, permissions, maintenance, data handling, and destructive actions before installation.", "",
     ])
     return "\n".join(lines)
